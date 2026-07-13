@@ -119,6 +119,25 @@
   }
   .time { font-size: 10.5px; color: var(--muted); margin: 3px 4px 0; }
 
+  .bubble-row { display: flex; align-items: center; gap: 6px; }
+  .me .bubble-row { flex-direction: row-reverse; }
+  .del-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity .15s;
+    font-family: inherit;
+  }
+  .msg:hover .del-btn, .del-btn:focus-visible { opacity: .8; }
+  .del-btn:hover { color: #f06a6a; }
+  @media (hover: none) { .del-btn { opacity: .45; } }
+
   .composer {
     display: flex;
     gap: 8px;
@@ -226,7 +245,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js";
 import {
-  getDatabase, ref, push, query, limitToLast, onChildAdded
+  getDatabase, ref, push, query, limitToLast, onChildAdded, onChildRemoved, remove
 } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
 
 /* ================================================================
@@ -274,31 +293,68 @@ function fmtTime(ts) {
   return `${ampm} ${hh}:${m}`;
 }
 
-function addMessageToUI(m) {
+const msgElements = new Map(); // Firebase key → DOM 요소
+
+function addMessageToUI(key, m) {
+  if (msgElements.has(key)) return;
   $empty.style.display = 'none';
   const nearBottom = $msgs.scrollHeight - $msgs.scrollTop - $msgs.clientHeight < 80;
 
+  const mine = m.name === nickname;
   const wrap = document.createElement('div');
-  wrap.className = 'msg ' + (m.name === nickname ? 'me' : 'other');
+  wrap.className = 'msg ' + (mine ? 'me' : 'other');
 
-  if (m.name !== nickname) {
+  if (!mine) {
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = m.name;
     wrap.appendChild(meta);
   }
+
+  const row = document.createElement('div');
+  row.className = 'bubble-row';
+
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.textContent = m.text;
-  wrap.appendChild(bubble);
+  row.appendChild(bubble);
+
+  if (mine) {
+    const del = document.createElement('button');
+    del.className = 'del-btn';
+    del.textContent = '🗑';
+    del.title = '메시지 삭제';
+    del.setAttribute('aria-label', '메시지 삭제');
+    del.addEventListener('click', async () => {
+      if (!confirm('이 메시지를 삭제할까요?')) return;
+      try {
+        await remove(ref(db, 'messages/' + key));
+      } catch (e) {
+        console.error(e);
+        alert('삭제에 실패했어요. 잠시 후 다시 시도해 주세요.');
+      }
+    });
+    row.appendChild(del);
+  }
+  wrap.appendChild(row);
 
   const time = document.createElement('div');
   time.className = 'time';
   time.textContent = fmtTime(m.ts);
   wrap.appendChild(time);
 
+  msgElements.set(key, wrap);
   $msgs.appendChild(wrap);
   if (nearBottom) $msgs.scrollTop = $msgs.scrollHeight;
+}
+
+function removeMessageFromUI(key) {
+  const el = msgElements.get(key);
+  if (el) {
+    el.remove();
+    msgElements.delete(key);
+  }
+  if (msgElements.size === 0) $empty.style.display = '';
 }
 
 function connect() {
@@ -316,7 +372,10 @@ function connect() {
     const q = query(messagesRef, limitToLast(MAX_SHOW));
     onChildAdded(q, (snap) => {
       const m = snap.val();
-      if (m && m.name && m.text) addMessageToUI(m);
+      if (m && m.name && m.text) addMessageToUI(snap.key, m);
+    });
+    onChildRemoved(q, (snap) => {
+      removeMessageFromUI(snap.key);
     });
 
     $status.textContent = '온라인';
